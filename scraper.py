@@ -21,8 +21,8 @@ from openpyxl.utils import get_column_letter
 # SEARCH SETTINGS
 keywords = [
     "education consultancy",
-    "IT training institute",
-    "digital marketing agency"
+    # "IT training institute",
+    # "digital marketing agency"
 ]
 
 cities = [
@@ -117,20 +117,37 @@ for keyword in keywords:
         for i in range(len(listings)):
 
             listings = driver.find_elements(By.CSS_SELECTOR, "div.Nv2PK")
+            
+            # Check to ensure index hasn't gone out of bounds if DOM changes
+            if i >= len(listings):
+                break
+                
             listing = listings[i]
 
             try:
+                # Scroll into view to ensure it can be clicked without being obstructed
+                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", listing)
+                time.sleep(1)
 
-                listing.click()
+                # Try standard click, fallback to script click if obstructed
+                try:
+                    listing.click()
+                except:
+                    driver.execute_script("arguments[0].click();", listing)
+
+                # Wait for the left panel to update with the new business data.
+                # This delay is crucial to prevent reading the previously clicked business.
+                time.sleep(3)
 
                 name = wait.until(
                     EC.presence_of_element_located((By.CSS_SELECTOR, "h1.DUwDvf"))
                 ).text
 
-            except:
+            except Exception as e:
                 name = ""
 
-            time.sleep(2)
+            # Small additional buffer for other details to load
+            time.sleep(1)
 
             try:
                 address = driver.find_element(
@@ -224,7 +241,7 @@ df = df.drop_duplicates(subset=["Business Name"])
 
 
 # SAVE TO EXCEL
-file_name = "nepal_business_leads.xlsx"
+file_name = "education_consultancy_leads.xlsx"
 df.to_excel(file_name, index=False)
 
 
