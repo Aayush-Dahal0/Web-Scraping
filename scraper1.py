@@ -42,7 +42,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from googlesearch import search as google_search
 
 from openpyxl import load_workbook
-from openpyxl.styles import Alignment, Font, PatternFill, Border, Side
+from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 
@@ -1029,8 +1029,13 @@ def _set_col_widths(ws, widths: dict):
 
 
 def save_excel(df: pd.DataFrame, path: str) -> None:
+    """
+    Writes all 4 sheets in a single ExcelWriter pass to avoid the
+    sheet-overwrite bug that occurred when calling df.to_excel() twice
+    on the same path.
+    """
 
-    # ── Sheet 1: Company Profiles ────────────────────────────────────────────
+    # ── Prepare sub-dataframes ────────────────────────────────────────────────
     profile_cols = [
         "Lead ID", "Organization Name", "Website", "Facebook", "LinkedIn",
         "Instagram", "YouTube", "City", "Country",
@@ -1047,10 +1052,42 @@ def save_excel(df: pd.DataFrame, path: str) -> None:
         "Collaboration Level", "Collaboration Tier", "MySchoolio Fit",
         "Why Relevant", "Source 1", "Source 2", "Source 3", "Maps Category",
     ]
-    df_profile = df[[c for c in profile_cols if c in df.columns]]
-    df_profile.to_excel(path, index=False, sheet_name="Company Profiles")
+    crm_cols = [
+        "Lead ID", "Organization Name", "City",
+        "Public Contact Email", "Public Contact Phone", "Contact Person",
+        "Founded", "Team Size", "Onboarded Schools", "Students Reached",
+        "Teaching Field", "Delivery Model", "School Facing?", "B2B Model",
+        "Lead Score", "Priority",
+        "Collaboration Level", "Collaboration Tier", "MySchoolio Fit",
+        "Facebook", "LinkedIn", "Website",
+    ]
+    rank_data_cols = [
+        "Organization Name", "Collaboration Level", "Collaboration Tier",
+        "Lead Score", "Onboarded Schools", "Students Reached",
+        "MySchoolio Fit", "Contact Person",
+        "Public Contact Email", "Public Contact Phone", "Website",
+    ]
 
+    df_profile = df[[c for c in profile_cols if c in df.columns]].copy()
+    df_crm     = df[[c for c in crm_cols     if c in df.columns]].copy()
+    df_rank    = df[[c for c in rank_data_cols if c in df.columns]].copy()
+    df_rank    = df_rank.sort_values(
+        ["Collaboration Level", "Lead Score"], ascending=[False, False]
+    ).reset_index(drop=True)
+
+    # ── Write all sheets in one pass ──────────────────────────────────────────
+    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+        df_profile.to_excel(writer, index=False, sheet_name="Company Profiles")
+        df_crm.to_excel(writer,     index=False, sheet_name="CRM Lead Sheet")
+        # Rank and Summary sheets are built manually below via openpyxl
+        # Write a placeholder so openpyxl knows the sheets exist
+        pd.DataFrame().to_excel(writer, sheet_name="Collaboration Ranks")
+        pd.DataFrame().to_excel(writer, sheet_name="Daily Summary")
+
+    # ── Re-open for styling ───────────────────────────────────────────────────
     wb = load_workbook(path)
+
+    # ── Sheet 1: Company Profiles ─────────────────────────────────────────────
     ws1 = wb["Company Profiles"]
     _apply_header(ws1)
     _apply_body(ws1)
@@ -1078,30 +1115,7 @@ def save_excel(df: pd.DataFrame, path: str) -> None:
     ws1.auto_filter.ref = ws1.dimensions
 
     # ── Sheet 2: CRM Lead Sheet ───────────────────────────────────────────────
-    crm_cols = [
-        "Lead ID", "Organization Name", "City",
-        "Public Contact Email", "Public Contact Phone", "Contact Person",
-        "Founded", "Team Size", "Onboarded Schools", "Students Reached",
-        "Teaching Field", "Delivery Model", "School Facing?", "B2B Model",
-        "Lead Score", "Priority",
-        "Collaboration Level", "Collaboration Tier", "MySchoolio Fit",
-        "Facebook", "LinkedIn", "Website",
-    ]
-    df_crm = df[[c for c in crm_cols if c in df.columns]]
-    df_crm.to_excel(path, index=False, sheet_name="CRM Lead Sheet")   # appended below
-
-    # Re-load to add CRM sheet properly
-    wb2 = load_workbook(path)
-    # CRM sheet was overwritten — rebuild by adding it
-    if "CRM Lead Sheet" not in wb2.sheetnames:
-        wb2.create_sheet("CRM Lead Sheet")
-    ws_crm = wb2["CRM Lead Sheet"]
-
-    # Write CRM header + data manually
-    ws_crm.append(list(df_crm.columns))
-    for _, row in df_crm.iterrows():
-        ws_crm.append(list(row))
-
+    ws_crm = wb["CRM Lead Sheet"]
     _apply_header(ws_crm, fill_color="1A5276")
     _apply_body(ws_crm)
     _set_col_widths(ws_crm, {
@@ -1119,33 +1133,29 @@ def save_excel(df: pd.DataFrame, path: str) -> None:
     ws_crm.freeze_panes    = "A2"
     ws_crm.auto_filter.ref = ws_crm.dimensions
 
-    # ── Sheet 3: Collaboration Ranks ──────────────────────────────────────────
-    ws_rank = wb2.create_sheet("Collaboration Ranks")
-    rank_headers = [
-        "Rank", "Organization Name", "Collaboration Level",
-        "Collaboration Tier", "Lead Score", "Onboarded Schools",
-        "Students Reached", "MySchoolio Fit", "Contact Person",
-        "Public Contact Email", "Public Contact Phone", "Website",
-    ]
+    # ── Sheet 3: Collaboration Ranks (rebuilt manually) ───────────────────────
+    ws_rank = wb["Collaboration Ranks"]
+    # Clear the placeholder content written by pd.DataFrame().to_excel()
+    for row in ws_rank.iter_rows():
+        for cell in row:
+            cell.value = None
+
+    rank_headers = ["Rank"] + rank_data_cols
     ws_rank.append(rank_headers)
     _apply_header(ws_rank, fill_color="4A235A")
 
-    rank_cols = [c for c in rank_headers if c in df.columns]
-    df_rank   = df[rank_cols].copy() if rank_cols else df.copy()
-    df_rank   = df_rank.sort_values(
-        ["Collaboration Level", "Lead Score"], ascending=[False, False]
-    ).reset_index(drop=True)
-
-    BODY_FONT = Font(name="Arial", size=9)
     for idx, (_, row) in enumerate(df_rank.iterrows(), 1):
-        tier  = str(row.get("Collaboration Tier", ""))
-        color = COLLAB_TIER_COLORS.get(tier, "FFFFFF")
-        fill  = PatternFill("solid", start_color=color, end_color=color)
-        # Determine text color for readability
-        dark_bg = tier in ("Heroic", "Legendary", "Bronze")
+        tier       = str(row.get("Collaboration Tier", "") if hasattr(row, "get")
+                         else row["Collaboration Tier"] if "Collaboration Tier" in row.index else "")
+        color      = COLLAB_TIER_COLORS.get(tier, "FFFFFF")
+        fill       = PatternFill("solid", start_color=color, end_color=color)
+        dark_bg    = tier in ("Heroic", "Legendary", "Bronze")
         font_color = "FFFFFF" if dark_bg else "000000"
 
-        ws_rank.append([idx] + [row.get(c, "") for c in rank_headers[1:]])
+        row_values = [idx] + [
+            row[c] if c in row.index else "" for c in rank_data_cols
+        ]
+        ws_rank.append(row_values)
         for cell in ws_rank[ws_rank.max_row]:
             cell.fill      = fill
             cell.font      = Font(name="Arial", size=9, color=font_color)
@@ -1162,14 +1172,17 @@ def save_excel(df: pd.DataFrame, path: str) -> None:
     ws_rank.freeze_panes    = "A2"
     ws_rank.auto_filter.ref = ws_rank.dimensions
 
-    # ── Sheet 4: Daily Summary ────────────────────────────────────────────────
-    ws_sum = wb2.create_sheet("Daily Summary")
+    # ── Sheet 4: Daily Summary (rebuilt manually) ─────────────────────────────
+    ws_sum = wb["Daily Summary"]
+    for row in ws_sum.iter_rows():
+        for cell in row:
+            cell.value = None
+
     tot    = len(df)
     ver    = int((df["Lead Score"] >= 4).sum())
     top5   = df.nlargest(5, "Lead Score")[
         ["Organization Name", "Lead Score", "Collaboration Tier", "MySchoolio Fit"]
     ]
-
     heroic_count    = int((df["Collaboration Tier"] == "Heroic").sum())
     legendary_count = int((df["Collaboration Tier"] == "Legendary").sum())
     platinum_count  = int((df["Collaboration Tier"] == "Platinum").sum())
@@ -1194,7 +1207,7 @@ def save_excel(df: pd.DataFrame, path: str) -> None:
     for _, r in top5.iterrows():
         summary_rows.append([
             r["Organization Name"], r["Lead Score"],
-            r["Collaboration Tier"], r["MySchoolio Fit"]
+            r["Collaboration Tier"], r["MySchoolio Fit"],
         ])
     summary_rows += [
         [],
@@ -1204,7 +1217,6 @@ def save_excel(df: pd.DataFrame, path: str) -> None:
         ["3. Score-3/Platinum leads need a validation call before pitching."],
         ["4. Use the CRM Lead Sheet tab for outreach tracking."],
     ]
-
     for row in summary_rows:
         ws_sum.append(row)
 
@@ -1217,16 +1229,17 @@ def save_excel(df: pd.DataFrame, path: str) -> None:
     ws_sum.column_dimensions["C"].width = 16
     ws_sum.column_dimensions["D"].width = 55
 
-    # Reorder sheets
-    sheet_order = [
+    # ── Reorder sheets safely ─────────────────────────────────────────────────
+    desired_order = [
         "Company Profiles", "CRM Lead Sheet",
-        "Collaboration Ranks", "Daily Summary"
+        "Collaboration Ranks", "Daily Summary",
     ]
-    for i, name in enumerate(sheet_order):
-        if name in wb2.sheetnames:
-            wb2.move_sheet(name, offset=i - wb2.sheetnames.index(name))
+    for target_idx, sheet_name in enumerate(desired_order):
+        if sheet_name in wb.sheetnames:
+            current_idx = wb.sheetnames.index(sheet_name)
+            wb.move_sheet(sheet_name, offset=target_idx - current_idx)
 
-    wb2.save(path)
+    wb.save(path)
     log.info("Excel saved → %s", path)
 
 
