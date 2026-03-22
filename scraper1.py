@@ -73,13 +73,13 @@ MAPS_QUERIES = [
     "makerspace school Nepal",
     "school robotics workshop Kathmandu",
     "electronics lab school Nepal",
-    # "IoT education Nepal",
-    # "AI school program Nepal",
-    # "edtech company Nepal",
-    # "coding bootcamp kids Nepal",
-    # "school science lab Nepal",
-    # "STEM lab setup Nepal",
-    # "robotics competition Nepal",
+    "IoT education Nepal",
+    "AI school program Nepal",
+    "edtech company Nepal",
+    "coding bootcamp kids Nepal",
+    "school science lab Nepal",
+    "STEM lab setup Nepal",
+    "robotics competition Nepal",
 ]
 
 WEB_QUERIES = [
@@ -910,23 +910,39 @@ _SKIP_DOMAINS = {
 }
 
 
-def _find_website_fallback(org_name: str) -> str:
+def _google_search_safe(query: str, num: int = 10) -> list:
+    """
+    Wrapper around googlesearch.search() that handles both old and new
+    versions of the library gracefully.
+
+    Old API (googlesearch-python < 1.2):  search(q, num=N, stop=N, pause=2)
+    New API (googlesearch-python >= 1.2):  search(q, num_results=N)
+    """
     try:
-        for url in google_search(f"{org_name} Nepal official site",
-                                 num=5, stop=5, pause=2):
-            if not any(d in url for d in _SOCIAL_DOMAINS):
-                return url
+        # Try new API first
+        return list(google_search(query, num_results=num))
+    except TypeError:
+        pass
+    try:
+        # Fall back to old API
+        return list(google_search(query, num=num, stop=num, pause=2))
     except Exception as exc:
-        log.debug("Fallback error: %s", exc)
+        log.debug("google_search failed: %s", exc)
+        return []
+
+
+def _find_website_fallback(org_name: str) -> str:
+    for url in _google_search_safe(f"{org_name} Nepal official site", num=5):
+        if not any(d in url for d in _SOCIAL_DOMAINS):
+            return url
     return ""
 
 
 def scrape_web_search(query, seen, data, counter):
     log.info("[Web] %s", query)
-    try:
-        results = list(google_search(query, num=10, stop=10, pause=2))
-    except Exception as exc:
-        log.warning("  Search failed: %s", exc)
+    results = _google_search_safe(query, num=10)
+    if not results:
+        log.warning("  No results returned for: %s", query)
         return
 
     for url in results:
